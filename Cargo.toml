@@ -1,0 +1,23 @@
+[package]
+name = "debounce_fltk"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70.0"
+keywords = ["fltk", "debounce"]
+description = "A simple debounce and throttling tool suitable for FLTK applications. Can be used to control the frequency of UI event processing or the frequency of function calls for other non UI events. Non macro processing, pure code control. Relying on tokio implementation."
+readme = "README.md"
+authors = ["t1000ln <t1000_ln@aliyun.com>"]
+license = "MIT"
+categories = ["gui"]
+repository = "https://github.com/t1000ln/debounce_on_tokio"
+exclude = ["res/*", "examples/*", ".github", ".gitignore"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = {version = "1", features = ["rt-multi-thread", "time"] }
+once_cell = "1"
+parking_lot = "0"
+idgenerator-thin = "0"
+fltk = "1"
+
