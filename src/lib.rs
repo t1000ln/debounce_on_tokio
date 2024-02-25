@@ -16,6 +16,8 @@
 //! }
 //! // 每隔1000毫秒打印一次任务信息。
 //! ```
+//! 防抖器结构体实例被创建后，将会通过tokio工作线程或协程无限循环检查新任务，在每个`duration`参数指定的周期内检查一次，
+//! 其余时间处于休眠状态。
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -190,7 +192,6 @@ static DEBOUNCE_LOCK: Lazy<RwLock<HashMap<i64, Instant>>> = Lazy::new(|| RwLock:
 /// # Arguments
 ///
 /// * `task_id`: 自定义的任务编号。每段任务的编号都是唯一的。
-/// * `now`: 当前时刻。
 /// * `limit`: 防抖有效时限。超过时限后检查点的状态将被重置。
 ///
 /// returns: bool 若返回true则表明未超限，可以继续向下执行。返回false表示当前逻辑不能继续执行，必须立刻返回，因为已经有一个同样的任务在最近执行过。
