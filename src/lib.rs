@@ -212,7 +212,7 @@ static DEBOUNCE_LOCK: Lazy<RwLock<HashMap<i64, Instant>>> = Lazy::new(|| RwLock:
 ///     if tree.has_focus() && evt == Event::KeyUp {
 ///         println!("接收到的事件：{:?}", evt);
 ///         let debounce_task_id = PANEL_TASK_ID.get_or_init(|| YitIdHelper::next_id());
-///         if !throttle_check(*debounce_task_id, Instant::now(), Duration::from_millis(300)) {
+///         if !throttle_check(*debounce_task_id, Duration::from_millis(300)) {
 ///             return false;
 ///         }
 ///         println!("通过防抖检查后处理的事件: {:?}", evt);
@@ -220,17 +220,17 @@ static DEBOUNCE_LOCK: Lazy<RwLock<HashMap<i64, Instant>>> = Lazy::new(|| RwLock:
 ///     false
 /// }
 /// ```
-pub fn throttle_check(task_id: i64, now: Instant, limit: Duration) -> bool {
+pub fn throttle_check(task_id: i64, limit: Duration) -> bool {
     if let Some(mut map) = DEBOUNCE_LOCK.try_write() {
         if let Some(last_start) = map.get(&task_id) {
             if last_start.elapsed() < limit {
                 false
             } else {
-                map.insert(task_id, now);
+                map.insert(task_id, Instant::now());
                 true
             }
         } else {
-            map.insert(task_id, now);
+            map.insert(task_id, Instant::now());
             true
         }
     } else {
