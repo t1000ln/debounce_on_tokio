@@ -10,9 +10,9 @@
 //! use debounce_fltk::TokioDebounce;
 //!
 //!
-//! let mut debounced_fn = TokioDebounce::new_debounce(Box::new(move |param: String| {
+//! let mut debounced_fn = TokioDebounce::new_debounce(move |param: String| {
 //!     println!("执行任务，入参：{}", param);
-//! }), Duration::from_millis(1000), false);
+//! }, Duration::from_millis(1000), false);
 //! for i in 0..50 {
 //!     debounced_fn.update_param(i.to_string());
 //!     thread::sleep(Duration::from_millis(200));
