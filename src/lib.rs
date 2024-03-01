@@ -61,14 +61,14 @@ impl<T: Clone + Send + 'static> TokioDebounce<T> {
     ///
     /// let total_exec_count = Arc::new(AtomicUsize::new(0));
     /// let start = Arc::new(RwLock::new(Instant::now()));
-    /// let mut debounce_fn = TokioDebounce::new_debounce(Box::new({
+    /// let mut debounce_fn = TokioDebounce::new_debounce({
     ///     let start_clone = start.clone();
     ///     let total_exec_count_clone = total_exec_count.clone();
     ///     move |param: String| {
     ///         total_exec_count_clone.fetch_add(1, Ordering::SeqCst);
     ///         println!("Debounced: {:?}，执行时刻：{:?}", param, start_clone.read().elapsed());
     ///     }
-    /// }), Duration::from_millis(300), false);
+    /// }, Duration::from_millis(300), false);
     /// debounce_fn.update_param(0.to_string());
     ///
     /// for i in 1..=10 {
@@ -90,7 +90,8 @@ impl<T: Clone + Send + 'static> TokioDebounce<T> {
     /// println!("结束时刻：{:?}", start.read().elapsed());
     /// assert_eq!(total_exec_count.load(Ordering::SeqCst), 1);
     /// ```
-    pub fn new_debounce(task: Box<dyn FnMut(T) + Send + Sync + 'static>, duration: Duration, ui_thread: bool) -> Self {
+    pub fn new_debounce<F>(task: F, duration: Duration, ui_thread: bool) -> Self
+    where F: FnMut(T) + Send + Sync + 'static {
         let jobs = Arc::new(AtomicU64::new(0));
         let jobs_clone = jobs.clone();
         let last_param: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
@@ -155,7 +156,7 @@ impl<T: Clone + Send + 'static> TokioDebounce<T> {
     ///
     /// let total_exec_count = Arc::new(AtomicUsize::new(0));
     /// let start = Arc::new(RwLock::new(Instant::now()));
-    /// let mut throttle_fn = TokioDebounce::new_throttle(Box::new({
+    /// let mut throttle_fn = TokioDebounce::new_throttle({
     ///     let start_clone = start.clone();
     ///     let total_exec_count_clone = total_exec_count.clone();
     ///     move |param: String| {
@@ -163,7 +164,7 @@ impl<T: Clone + Send + 'static> TokioDebounce<T> {
     ///         println!("Throttle: {:?}，执行时刻：{:?}", param, start_clone.read().elapsed());
     ///         false
     ///     }
-    /// }), Duration::from_millis(300), false);
+    /// }, Duration::from_millis(300), false);
     /// throttle_fn.update_param(0.to_string());
     ///
     /// for i in 1..=10 {
@@ -185,7 +186,8 @@ impl<T: Clone + Send + 'static> TokioDebounce<T> {
     /// println!("结束时刻：{:?}", start.read().elapsed());
     /// assert_eq!(total_exec_count.load(Ordering::SeqCst), 1);
     /// ```
-    pub fn new_throttle(task: Box<dyn FnMut(T) -> bool + Send + Sync + 'static>, duration: Duration, ui_thread: bool) -> Self {
+    pub fn new_throttle<F>(task: F, duration: Duration, ui_thread: bool) -> Self
+    where F: FnMut(T) -> bool + Send + Sync + 'static {
         let jobs = Arc::new(AtomicU64::new(0));
         let jobs_clone = jobs.clone();
         let last_param: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
@@ -214,7 +216,7 @@ impl<T: Clone + Send + 'static> TokioDebounce<T> {
                                     }
                                 });
                             } else {
-                                if (task.write())(param.clone()) {
+                                if task.write()(param.clone()) {
                                     jobs_clone.fetch_add(1, Ordering::SeqCst);
                                 } else {
                                     jobs_clone.store(0, Ordering::SeqCst);
@@ -367,14 +369,14 @@ impl<T: Debug + Clone + Send + 'static> TimeoutTask<T> {
     ///
     /// let total_exec_count = Arc::new(AtomicUsize::new(0));
     /// let start = Arc::new(RwLock::new(Instant::now()));
-    /// let mut timeout_fn = TimeoutTask::new(Box::new({
+    /// let mut timeout_fn = TimeoutTask::new({
     ///     let start_clone = start.clone();
     ///     let total_exec_count_clone = total_exec_count.clone();
     ///     move |p| {
     ///         total_exec_count_clone.fetch_add(1, Ordering::SeqCst);
     ///         println!("Timeout: {:?}，执行时刻：{:?}", p, start_clone.read().elapsed());
     ///     }
-    /// }), Duration::from_millis(300), false, true);
+    /// }, Duration::from_millis(300), false, true);
     /// timeout_fn.update_param(());
     ///
     /// for _ in 1..=10 {
@@ -392,7 +394,7 @@ impl<T: Debug + Clone + Send + 'static> TimeoutTask<T> {
     /// assert_eq!(total_exec_count.load(Ordering::SeqCst), 6);
     /// println!("结束时刻：{:?}", start.read().elapsed());
     /// ```
-    pub fn new<F>(task: Box<F>, timeout: Duration, ui_thread: bool, repeat: bool) -> Self
+    pub fn new<F>(task: F, timeout: Duration, ui_thread: bool, repeat: bool) -> Self
     where F: FnMut(T) + Clone + Send + Sync +'static{
         let last_param = Arc::new(Mutex::new(None));
         let last_tick = Arc::new(Mutex::new(Instant::now()));
@@ -503,14 +505,14 @@ mod tests {
     pub async fn debounce_test() {
         let total_exec_count = Arc::new(AtomicUsize::new(0));
         let start = Arc::new(RwLock::new(Instant::now()));
-        let mut debounce_fn = TokioDebounce::new_debounce(Box::new({
-            let start_clone = start.clone();
-            let total_exec_count_clone = total_exec_count.clone();
-            move |param: String| {
-                total_exec_count_clone.fetch_add(1, Ordering::SeqCst);
-                println!("Debounced: {:?}，执行时刻：{:?}", param, start_clone.read().elapsed());
-            }
-        }), Duration::from_millis(300), false);
+        let mut debounce_fn = TokioDebounce::new_debounce({
+                                                              let start_clone = start.clone();
+                                                              let total_exec_count_clone = total_exec_count.clone();
+                                                              move |param: String| {
+                                                                  total_exec_count_clone.fetch_add(1, Ordering::SeqCst);
+                                                                  println!("Debounced: {:?}，执行时刻：{:?}", param, start_clone.read().elapsed());
+                                                              }
+                                                          }, Duration::from_millis(300), false);
         debounce_fn.update_param(0.to_string());
 
         for i in 1..=10 {
@@ -537,7 +539,7 @@ mod tests {
     pub async fn throttle_test() {
         let total_exec_count = Arc::new(AtomicUsize::new(0));
         let start = Arc::new(RwLock::new(Instant::now()));
-        let mut throttle_fn = TokioDebounce::new_throttle(Box::new({
+        let mut throttle_fn = TokioDebounce::new_throttle({
             let start_clone = start.clone();
             let total_exec_count_clone = total_exec_count.clone();
             move |param: String| {
@@ -545,7 +547,7 @@ mod tests {
                 println!("Throttle: {:?}，执行时刻：{:?}", param, start_clone.read().elapsed());
                 false
             }
-        }), Duration::from_millis(300), false);
+        }, Duration::from_millis(300), false);
         throttle_fn.update_param(0.to_string());
 
         for i in 1..=10 {
@@ -572,14 +574,14 @@ mod tests {
     pub async fn timeout_test() {
         let total_exec_count = Arc::new(AtomicUsize::new(0));
         let start = Arc::new(RwLock::new(Instant::now()));
-        let mut timeout_fn = TimeoutTask::new(Box::new({
+        let mut timeout_fn = TimeoutTask::new({
             let start_clone = start.clone();
             let total_exec_count_clone = total_exec_count.clone();
             move |p| {
                 total_exec_count_clone.fetch_add(1, Ordering::SeqCst);
                 println!("Timeout: {:?}，执行时刻：{:?}", p, start_clone.read().elapsed());
             }
-        }), Duration::from_millis(300), false, true);
+        }, Duration::from_millis(300), false, true);
         timeout_fn.update_param(());
 
         for _ in 1..=10 {
