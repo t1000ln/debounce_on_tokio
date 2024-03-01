@@ -1,11 +1,12 @@
 # debounce_fltk
-A simple anti shake and throttling tool suitable for FLTK applications. 
-Can be used to control the frequency of UI event processing or the frequency of function calls for other non UI events. 
+A simple debounce and throttling tool suitable for FLTK applications. 
+Can be used to control the frequency of UI event processing or the frequency of function calls for other non UI events.
+It also supports executing a task at once or repeatedly after the preset timer expires.
 Non macro processing, pure code control. Relying on tokio implementation.
 
 Usage examples:
 ```rust
-    let mut debounce_update = TokioDebounce::new_debounce(Box::new({
+    let mut debounce_update = TokioDebounce::new_debounce({
         let vp = version_package.clone();
         let mut script_editor = script_editor.clone();
         let tree = tree.clone();
@@ -15,7 +16,7 @@ Usage examples:
             update_level_record(tree.clone(), vp.clone(), script_editor.clone(), editor_window.clone());
             update_tree_stat(tree.clone(), &mut script_editor);
         }
-    }), Duration::from_millis(100), true);
+    }, Duration::from_millis(100), true);
 
     tree.set_callback({
         let mut script_editor = script_editor.clone();
