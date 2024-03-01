@@ -23,12 +23,13 @@
 //! 其余时间处于休眠状态。
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::fmt::Debug;
+use std::sync::{Arc};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use fltk::app;
 use once_cell::sync::Lazy;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 
 /// 基于tokio异步上下文防抖器。
 #[derive(Debug, Clone)]
@@ -52,7 +53,42 @@ impl<T: Clone + Send + 'static> TokioDebounce<T> {
     /// # Examples
     ///
     /// ```
+    /// use std::sync::Arc;
+    /// use std::sync::atomic::{AtomicUsize, Ordering};
+    /// use std::time::{Duration, Instant};
+    /// use parking_lot::RwLock;
+    /// use debounce_fltk::TokioDebounce;
     ///
+    /// let total_exec_count = Arc::new(AtomicUsize::new(0));
+    /// let start = Arc::new(RwLock::new(Instant::now()));
+    /// let mut debounce_fn = TokioDebounce::new_debounce(Box::new({
+    ///     let start_clone = start.clone();
+    ///     let total_exec_count_clone = total_exec_count.clone();
+    ///     move |param: String| {
+    ///         total_exec_count_clone.fetch_add(1, Ordering::SeqCst);
+    ///         println!("Debounced: {:?}，执行时刻：{:?}", param, start_clone.read().elapsed());
+    ///     }
+    /// }), Duration::from_millis(300), false);
+    /// debounce_fn.update_param(0.to_string());
+    ///
+    /// for i in 1..=10 {
+    ///     tokio::time::sleep(Duration::from_millis(100)).await;
+    ///     debounce_fn.update_param(i.to_string());
+    /// }
+    /// tokio::time::sleep(Duration::from_millis(500)).await;
+    /// println!("结束时刻：{:?}", start.read().elapsed());
+    /// assert_eq!(total_exec_count.load(Ordering::SeqCst), 4);
+    ///
+    /// *start.write() = Instant::now();
+    /// total_exec_count.store(0, Ordering::SeqCst);
+    /// for i in 1..=10 {
+    ///     tokio::time::sleep(Duration::from_millis(100)).await;
+    ///     debounce_fn.update_param(i.to_string());
+    ///     debounce_fn.delay_once();
+    /// }
+    /// tokio::time::sleep(Duration::from_millis(500)).await;
+    /// println!("结束时刻：{:?}", start.read().elapsed());
+    /// assert_eq!(total_exec_count.load(Ordering::SeqCst), 1);
     /// ```
     pub fn new_debounce(task: Box<dyn FnMut(T) + Send + Sync + 'static>, duration: Duration, ui_thread: bool) -> Self {
         let jobs = Arc::new(AtomicU64::new(0));
@@ -67,19 +103,17 @@ impl<T: Clone + Send + 'static> TokioDebounce<T> {
             loop {
                 if !skip_next_once.load(Ordering::Relaxed) {
                     if jobs_clone.load(Ordering::Relaxed) > 0 {
-                        if let Ok(mut param) = last_param_clone.lock() {
-                            if let Some(param) = param.as_mut() {
-                                if ui_thread {
-                                    app::awake_callback({
-                                        let param = param.clone();
-                                        let task = task.clone();
-                                        move || {
-                                            task.write()(param.clone());
-                                        }
-                                    });
-                                } else {
-                                    (task.write())(param.clone());
-                                }
+                        if let Some(param) = last_param_clone.lock().take() {
+                            if ui_thread {
+                                app::awake_callback({
+                                    let param = param.clone();
+                                    let task = task.clone();
+                                    move || {
+                                        task.write()(param.clone());
+                                    }
+                                });
+                            } else {
+                                (task.write())(param.clone());
                             }
                         }
                         jobs_clone.store(0, Ordering::SeqCst);
@@ -113,7 +147,43 @@ impl<T: Clone + Send + 'static> TokioDebounce<T> {
     /// # Examples
     ///
     /// ```
+    /// use std::sync::Arc;
+    /// use std::sync::atomic::{AtomicUsize, Ordering};
+    /// use std::time::{Duration, Instant};
+    /// use parking_lot::RwLock;
+    /// use debounce_fltk::TokioDebounce;
     ///
+    /// let total_exec_count = Arc::new(AtomicUsize::new(0));
+    /// let start = Arc::new(RwLock::new(Instant::now()));
+    /// let mut throttle_fn = TokioDebounce::new_throttle(Box::new({
+    ///     let start_clone = start.clone();
+    ///     let total_exec_count_clone = total_exec_count.clone();
+    ///     move |param: String| {
+    ///         total_exec_count_clone.fetch_add(1, Ordering::SeqCst);
+    ///         println!("Throttle: {:?}，执行时刻：{:?}", param, start_clone.read().elapsed());
+    ///         false
+    ///     }
+    /// }), Duration::from_millis(300), false);
+    /// throttle_fn.update_param(0.to_string());
+    ///
+    /// for i in 1..=10 {
+    ///     tokio::time::sleep(Duration::from_millis(100)).await;
+    ///     throttle_fn.update_param(i.to_string());
+    /// }
+    /// tokio::time::sleep(Duration::from_millis(500)).await;
+    /// println!("结束时刻：{:?}", start.read().elapsed());
+    /// assert_eq!(total_exec_count.load(Ordering::SeqCst), 5);
+    ///
+    /// *start.write() = Instant::now();
+    /// total_exec_count.store(0, Ordering::SeqCst);
+    /// for i in 1..=10 {
+    ///     tokio::time::sleep(Duration::from_millis(100)).await;
+    ///     throttle_fn.delay_once();
+    ///     throttle_fn.update_param(i.to_string());
+    /// }
+    /// tokio::time::sleep(Duration::from_millis(500)).await;
+    /// println!("结束时刻：{:?}", start.read().elapsed());
+    /// assert_eq!(total_exec_count.load(Ordering::SeqCst), 1);
     /// ```
     pub fn new_throttle(task: Box<dyn FnMut(T) -> bool + Send + Sync + 'static>, duration: Duration, ui_thread: bool) -> Self {
         let jobs = Arc::new(AtomicU64::new(0));
@@ -129,27 +199,25 @@ impl<T: Clone + Send + 'static> TokioDebounce<T> {
             loop {
                 if !skip_next_once.load(Ordering::Relaxed) {
                     if jobs_clone.load(Ordering::Relaxed) > 0 {
-                        if let Ok(mut param) = last_param_clone.lock() {
-                            if let Some(param) = param.as_mut() {
-                                if ui_thread {
-                                    app::awake_callback({
-                                        let param = param.clone();
-                                        let task = task.clone();
-                                        let jobs_clone = jobs_clone.clone();
-                                        move || {
-                                            if task.write()(param.clone()) {
-                                                jobs_clone.fetch_add(1, Ordering::SeqCst);
-                                            } else {
-                                                jobs_clone.store(0, Ordering::SeqCst);
-                                            }
+                        if let Some(param) = last_param_clone.lock().as_mut() {
+                            if ui_thread {
+                                app::awake_callback({
+                                    let param = param.clone();
+                                    let task = task.clone();
+                                    let jobs_clone = jobs_clone.clone();
+                                    move || {
+                                        if task.write()(param.clone()) {
+                                            jobs_clone.fetch_add(1, Ordering::SeqCst);
+                                        } else {
+                                            jobs_clone.store(0, Ordering::SeqCst);
                                         }
-                                    });
-                                } else {
-                                    if (task.write())(param.clone()) {
-                                        jobs_clone.fetch_add(1, Ordering::SeqCst);
-                                    } else {
-                                        jobs_clone.store(0, Ordering::SeqCst);
                                     }
+                                });
+                            } else {
+                                if (task.write())(param.clone()) {
+                                    jobs_clone.fetch_add(1, Ordering::SeqCst);
+                                } else {
+                                    jobs_clone.store(0, Ordering::SeqCst);
                                 }
                             }
                         }
@@ -195,10 +263,8 @@ impl<T: Clone + Send + 'static> TokioDebounce<T> {
     /// }
     /// ```
     pub fn update_param(&mut self, value: T) {
-        if let Ok(mut lp) = self.last_param.lock() {
-            lp.replace(value);
-            self.jobs.fetch_add(1, Ordering::SeqCst);
-        }
+        self.last_param.lock().replace(value);
+        self.jobs.fetch_add(1, Ordering::SeqCst);
     }
 
     /// 设置延后一个周期执行任务，如果有任务的话。
@@ -267,13 +333,171 @@ pub fn throttle_check(task_id: i64, limit: Duration) -> bool {
     }
 }
 
+/// 超时后执行的任务。<br>
+/// 在超时前调用`update_param`方法更新参数。<br>
+/// 在超时前调用`touch`方法重新计时。<br>
+/// 这个任务计时器不能精准计时，可能会有微秒到毫秒级的误差。
+#[derive(Debug, Clone)]
+pub struct TimeoutTask<T> {
+    last_param: Arc<Mutex<Option<T>>>,
+    last_tick: Arc<Mutex<Instant>>,
+    repeat: Arc<AtomicBool>,
+}
+
+impl<T: Debug + Clone + Send + 'static> TimeoutTask<T> {
+    /// 创建新的超时任务计时器。
+    ///
+    /// # Arguments
+    ///
+    /// * `task`: 回调任务。
+    /// * `timeout`: 超时设定。
+    /// * `ui_thread`: 是否在`fltk`的`UI主线程`中执行任务。
+    /// * `repeat`: 是否重复执行任务。若为`true`则会按照超时间隔重复执行任务。
+    ///
+    /// returns: TimeoutTask<T>
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use std::sync::atomic::{AtomicUsize, Ordering};
+    /// use std::time::{Duration, Instant};
+    /// use parking_lot::RwLock;
+    /// use debounce_fltk::TimeoutTask;
+    ///
+    /// let total_exec_count = Arc::new(AtomicUsize::new(0));
+    /// let start = Arc::new(RwLock::new(Instant::now()));
+    /// let mut timeout_fn = TimeoutTask::new(Box::new({
+    ///     let start_clone = start.clone();
+    ///     let total_exec_count_clone = total_exec_count.clone();
+    ///     move |p| {
+    ///         total_exec_count_clone.fetch_add(1, Ordering::SeqCst);
+    ///         println!("Timeout: {:?}，执行时刻：{:?}", p, start_clone.read().elapsed());
+    ///     }
+    /// }), Duration::from_millis(300), false, true);
+    /// timeout_fn.update_param(());
+    ///
+    /// for _ in 1..=10 {
+    ///     tokio::time::sleep(Duration::from_millis(100)).await;
+    ///     timeout_fn.touch();
+    /// }
+    /// tokio::time::sleep(Duration::from_millis(500)).await;
+    /// assert_eq!(total_exec_count.load(Ordering::SeqCst), 1);
+    /// total_exec_count.store(0, Ordering::SeqCst);
+    /// timeout_fn.touch();
+    /// println!("重新计数时刻：{:?}", start.read().elapsed());
+    ///
+    /// // timeout_fn.stop_repeat();
+    /// tokio::time::sleep(Duration::from_millis(2000)).await;
+    /// assert_eq!(total_exec_count.load(Ordering::SeqCst), 6);
+    /// println!("结束时刻：{:?}", start.read().elapsed());
+    /// ```
+    pub fn new<F>(task: Box<F>, timeout: Duration, ui_thread: bool, repeat: bool) -> Self
+    where F: FnMut(T) + Clone + Send + Sync +'static{
+        let last_param = Arc::new(Mutex::new(None));
+        let last_tick = Arc::new(Mutex::new(Instant::now()));
+        let repeat = Arc::new(AtomicBool::new(repeat));
+        tokio::spawn({
+            let ui_thread = ui_thread.clone();
+            let last_param = last_param.clone();
+            let last_tick = last_tick.clone();
+            let repeat = repeat.clone();
+            let mut task = task.clone();
+            async move {
+                // println!("开始监控超时任务");
+                loop {
+                    loop {
+                        // 检查最近一次的更新时间到当前时刻是否超过预定时限
+                        let tmp_dur = last_tick.lock().elapsed();
+                        // println!("距离上次更新过去时间：{:?}", tmp_dur);
+                        if let Some(left) = timeout.clone().checked_sub(tmp_dur) {
+                            // 最近一次更新时间与当前时间的时差小于预定时限，则休眠这个时差后再次检查
+                            tokio::time::sleep(left).await;
+                        } else {
+                            // 如果最近一次更新时间与当前时刻之间的时差已经大于等于预定时限，则开始执行预定任务。
+                            break;
+                        }
+                    }
+                    *last_tick.lock() = Instant::now();
+
+                    if ui_thread {
+                        app::awake_callback({
+                            let lp = last_param.clone();
+                            let mut task = task.clone();
+                            let repeat = repeat.clone();
+                            move || {
+                                let param = if !repeat.load(Ordering::SeqCst) {
+                                    lp.lock().take()
+                                } else {
+                                    lp.lock().clone()
+                                };
+                                if let Some(p) = param {
+                                    task(p);
+                                }
+                            }
+                        });
+                        if !repeat.load(Ordering::SeqCst) {
+                            break;
+                        }
+                    } else {
+                        let param = if !repeat.load(Ordering::SeqCst) {
+                            last_param.lock().take()
+                        } else {
+                            last_param.lock().clone()
+                        };
+                        if let Some(p) = param {
+                            task(p);
+                        }
+                        if !repeat.load(Ordering::SeqCst) {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        Self {
+            last_param,
+            last_tick,
+            repeat,
+        }
+    }
+
+    /// 更新待执行任务的入参。
+    ///
+    /// # Arguments
+    ///
+    /// * `new_param`: 新的任务参数。
+    ///
+    /// returns: ()
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///
+    /// ```
+    pub fn update_param(&mut self, new_param: T) {
+        self.last_param.lock().replace(new_param);
+    }
+
+    /// 重置计时器，将计时器起始点设置为当前时刻。
+    pub fn touch(&mut self) {
+        *self.last_tick.lock() = Instant::now();
+    }
+
+    /// 如果当前任务初始化为重复执行，则改变重复执行的行为成单次执行。即执行完本次超时任务后退出计时器。
+    pub fn stop_repeat(&mut self) {
+        self.repeat.store(false, Ordering::SeqCst);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
     use parking_lot::RwLock;
-    use crate::TokioDebounce;
+    use crate::{TimeoutTask, TokioDebounce};
 
     #[tokio::test]
     pub async fn debounce_test() {
@@ -342,5 +566,35 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
         println!("结束时刻：{:?}", start.read().elapsed());
         assert_eq!(total_exec_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    pub async fn timeout_test() {
+        let total_exec_count = Arc::new(AtomicUsize::new(0));
+        let start = Arc::new(RwLock::new(Instant::now()));
+        let mut timeout_fn = TimeoutTask::new(Box::new({
+            let start_clone = start.clone();
+            let total_exec_count_clone = total_exec_count.clone();
+            move |p| {
+                total_exec_count_clone.fetch_add(1, Ordering::SeqCst);
+                println!("Timeout: {:?}，执行时刻：{:?}", p, start_clone.read().elapsed());
+            }
+        }), Duration::from_millis(300), false, true);
+        timeout_fn.update_param(());
+
+        for _ in 1..=10 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            timeout_fn.touch();
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(total_exec_count.load(Ordering::SeqCst), 1);
+        total_exec_count.store(0, Ordering::SeqCst);
+        timeout_fn.touch();
+        println!("重新计数时刻：{:?}", start.read().elapsed());
+
+        // timeout_fn.stop_repeat();
+        tokio::time::sleep(Duration::from_millis(2000)).await;
+        assert_eq!(total_exec_count.load(Ordering::SeqCst), 6);
+        println!("结束时刻：{:?}", start.read().elapsed());
     }
 }
