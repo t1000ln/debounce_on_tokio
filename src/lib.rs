@@ -6,16 +6,16 @@
 //! 用法示例：
 //! ```rust
 //! use std::thread;
-//! use std::time::Duration;
+//! use std::time::{Duration, Instant};
 //! use debounce_fltk::TokioDebounce;
 //!
-//!
+//! let start = Instant::now();
 //! let mut debounced_fn = TokioDebounce::new_debounce(move |param: String| {
-//!     println!("执行任务，入参：{}", param);
+//!     println!("经过 {:?}, 执行任务，入参：{}", start.elapsed(), param);
 //! }, Duration::from_millis(1000), false);
 //! for i in 0..50 {
 //!     debounced_fn.update_param(i.to_string());
-//!     thread::sleep(Duration::from_millis(200));
+//!     tokio::time::sleep(Duration::from_millis(200)).await;
 //! }
 //! // 每隔1000毫秒打印一次任务信息。
 //! ```
@@ -508,13 +508,13 @@ mod tests {
         let total_exec_count = Arc::new(AtomicUsize::new(0));
         let start = Arc::new(RwLock::new(Instant::now()));
         let mut debounce_fn = TokioDebounce::new_debounce({
-                                                              let start_clone = start.clone();
-                                                              let total_exec_count_clone = total_exec_count.clone();
-                                                              move |param: String| {
-                                                                  total_exec_count_clone.fetch_add(1, Ordering::SeqCst);
-                                                                  println!("Debounced: {:?}，执行时刻：{:?}", param, start_clone.read().elapsed());
-                                                              }
-                                                          }, Duration::from_millis(300), false);
+            let start_clone = start.clone();
+            let total_exec_count_clone = total_exec_count.clone();
+            move |param: String| {
+              total_exec_count_clone.fetch_add(1, Ordering::SeqCst);
+              println!("Debounced: {:?}，执行时刻：{:?}", param, start_clone.read().elapsed());
+            }
+        }, Duration::from_millis(300), false);
         debounce_fn.update_param(0.to_string());
 
         for i in 1..=10 {
@@ -600,5 +600,17 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(2000)).await;
         assert_eq!(total_exec_count.load(Ordering::SeqCst), 6);
         println!("结束时刻：{:?}", start.read().elapsed());
+    }
+
+    #[tokio::test]
+    pub async fn debounce_test2() {
+        let start = Instant::now();
+        let mut debounced_fn = TokioDebounce::new_debounce(move |param: String| {
+            println!("经过 {:?}, 执行任务，入参：{}", start.elapsed(), param);
+        }, Duration::from_millis(1000), false);
+        for i in 0..50 {
+            debounced_fn.update_param(i.to_string());
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
     }
 }
