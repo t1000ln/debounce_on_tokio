@@ -1,6 +1,6 @@
 [package]
 name = "debounce_fltk"
-version = "0.4.2"
+version = "0.5.0"
 edition = "2021"
 rust-version = "1.70.0"
 keywords = ["fltk", "debounce"]
@@ -10,7 +10,7 @@ authors = ["t1000ln <t1000_ln@aliyun.com>"]
 license = "MIT"
 categories = ["gui"]
 repository = "https://github.com/t1000ln/debounce_on_tokio"
-exclude = ["res/*", "examples/*", ".github", ".gitignore"]
+exclude = ["res/*", ".github", ".gitignore"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

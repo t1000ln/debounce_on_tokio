@@ -28,10 +28,13 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::{Arc};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::thread;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use fltk::app;
 use once_cell::sync::Lazy;
 use parking_lot::{Mutex, RwLock};
+use tokio::runtime::{Runtime};
 
 /// 基于tokio异步上下文防抖器。
 #[derive(Debug, Clone)]
@@ -337,6 +340,18 @@ pub fn throttle_check(task_id: i64, limit: Duration) -> bool {
     }
 }
 
+/// 超时任务类型。
+#[derive(Debug, Clone, Copy)]
+pub enum TimeoutType {
+    /// 一次性任务，执行完就退出。
+    Once,
+    /// 重复性超时任务，以接近固定的周期自动重复执行。
+    Repeat,
+    /// 单次超时任务，但执行完并不退出，而是进入休眠等待唤醒后可再执行单次任务。
+    /// 使用这种类型可以不同的超时间隔，多次执行超时任务，而不必多次创建任务实例。
+    OnceMore
+}
+
 /// 超时后执行的任务。<br>
 /// 在超时前调用`update_param`方法更新参数。<br>
 /// 在超时前调用`touch`方法重新计时。<br>
@@ -345,7 +360,8 @@ pub fn throttle_check(task_id: i64, limit: Duration) -> bool {
 pub struct TimeoutTask<T> {
     last_param: Arc<Mutex<Option<T>>>,
     last_tick: Arc<Mutex<Instant>>,
-    repeat: Arc<AtomicBool>,
+    timeout_type: Arc<RwLock<TimeoutType>>,
+    thread_handler: Arc<Mutex<JoinHandle<()>>>
 }
 
 impl<T: Debug + Clone + Send + 'static> TimeoutTask<T> {
@@ -367,7 +383,7 @@ impl<T: Debug + Clone + Send + 'static> TimeoutTask<T> {
     /// use std::sync::atomic::{AtomicUsize, Ordering};
     /// use std::time::{Duration, Instant};
     /// use parking_lot::RwLock;
-    /// use debounce_fltk::TimeoutTask;
+    /// use debounce_fltk::{TimeoutTask, TimeoutType};
     ///
     /// let total_exec_count = Arc::new(AtomicUsize::new(0));
     /// let start = Arc::new(RwLock::new(Instant::now()));
@@ -378,8 +394,8 @@ impl<T: Debug + Clone + Send + 'static> TimeoutTask<T> {
     ///         total_exec_count_clone.fetch_add(1, Ordering::SeqCst);
     ///         println!("Timeout: {:?}，执行时刻：{:?}", p, start_clone.read().elapsed());
     ///     }
-    /// }, Duration::from_millis(300), false, true);
-    /// timeout_fn.update_param(());
+    /// }, Duration::from_millis(300), false, TimeoutType::Repeat);
+    /// timeout_fn.feed_param(());
     ///
     /// for _ in 1..=10 {
     ///     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -396,64 +412,111 @@ impl<T: Debug + Clone + Send + 'static> TimeoutTask<T> {
     /// assert_eq!(total_exec_count.load(Ordering::SeqCst), 6);
     /// println!("结束时刻：{:?}", start.read().elapsed());
     /// ```
-    pub fn new<F>(task: F, timeout: Duration, ui_thread: bool, repeat: bool) -> Self
+    pub fn new<F>(task: F, timeout: Duration, ui_thread: bool, timeout_type: TimeoutType) -> Self
     where F: FnMut(T) + Clone + Send + Sync +'static{
         let last_param = Arc::new(Mutex::new(None));
         let last_tick = Arc::new(Mutex::new(Instant::now()));
-        let repeat = Arc::new(AtomicBool::new(repeat));
-        tokio::spawn({
+        let timeout_type = Arc::new(RwLock::new(timeout_type));
+        let jh = thread::spawn({
             let ui_thread = ui_thread.clone();
             let last_param = last_param.clone();
             let last_tick = last_tick.clone();
-            let repeat = repeat.clone();
-            let mut task = task.clone();
-            async move {
-                // println!("开始监控超时任务");
-                loop {
-                    loop {
-                        // 检查最近一次的更新时间到当前时刻是否超过预定时限
-                        let tmp_dur = last_tick.lock().elapsed();
-                        // println!("距离上次更新过去时间：{:?}", tmp_dur);
-                        if let Some(left) = timeout.clone().checked_sub(tmp_dur) {
-                            // 最近一次更新时间与当前时间的时差小于预定时限，则休眠这个时差后再次检查
-                            tokio::time::sleep(left).await;
-                        } else {
-                            // 如果最近一次更新时间与当前时刻之间的时差已经大于等于预定时限，则开始执行预定任务。
-                            break;
+            let timeout_type = timeout_type.clone();
+            let task = task.clone();
+            move || {
+                let tt = {timeout_type.read().clone()};
+                match tt {
+                    TimeoutType::Once | TimeoutType::OnceMore => {
+                        let lack_of_param = { last_param.lock().is_none() };
+                        if lack_of_param {
+                            thread::park();
                         }
                     }
-                    *last_tick.lock() = Instant::now();
+                    _ => {}
+                }
 
-                    if ui_thread {
-                        app::awake_callback({
-                            let lp = last_param.clone();
-                            let mut task = task.clone();
-                            let repeat = repeat.clone();
-                            move || {
-                                let param = if !repeat.load(Ordering::SeqCst) {
-                                    lp.lock().take()
+                loop {
+                    Runtime::new().unwrap().block_on({
+                        let ui_thread = ui_thread.clone();
+                        let last_param = last_param.clone();
+                        let last_tick = last_tick.clone();
+                        let timeout_type = timeout_type.clone();
+                        let mut task = task.clone();
+                        async move {
+                            loop {
+                                loop {
+                                    // 检查最近一次的更新时间到当前时刻是否超过预定时限
+                                    let tmp_dur = last_tick.lock().elapsed();
+                                    // println!("距离上次更新过去时间：{:?}", tmp_dur);
+                                    if let Some(left) = timeout.clone().checked_sub(tmp_dur) {
+                                        // 最近一次更新时间与当前时间的时差小于预定时限，则休眠这个时差后再次检查
+                                        tokio::time::sleep(left).await;
+                                    } else {
+                                        // 如果最近一次更新时间与当前时刻之间的时差已经大于等于预定时限，则开始执行预定任务。
+                                        break;
+                                    }
+                                }
+                                *last_tick.lock() = Instant::now();
+
+                                if ui_thread {
+                                    app::awake_callback({
+                                        let lp = last_param.clone();
+                                        let mut task = task.clone();
+                                        let timeout_type = timeout_type.clone();
+                                        move || {
+                                            let tt = { timeout_type.read().clone() };
+                                            match tt {
+                                                TimeoutType::Once | TimeoutType::OnceMore => {
+                                                    if let Some(p) = lp.lock().take() {
+                                                        task(p);
+                                                    }
+                                                }
+                                                TimeoutType::Repeat => {
+                                                    if let Some(p) = lp.lock().clone() {
+                                                        task(p);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    });
+                                    let tt = { timeout_type.read().clone() };
+                                    match tt {
+                                        TimeoutType::Once | TimeoutType::OnceMore => {
+                                            break;
+                                        }
+                                        TimeoutType::Repeat => {
+                                            continue;
+                                        }
+                                    }
                                 } else {
-                                    lp.lock().clone()
-                                };
-                                if let Some(p) = param {
-                                    task(p);
+                                    let tt = { timeout_type.read().clone() };
+                                    match tt {
+                                        TimeoutType::Once | TimeoutType::OnceMore => {
+                                            if let Some(p) = last_param.lock().take() {
+                                                task(p);
+                                            }
+                                            break;
+                                        },
+                                        TimeoutType::Repeat => {
+                                            if let Some(p) = last_param.lock().clone() {
+                                                task(p);
+                                            }
+                                            continue;
+                                        },
+                                    }
                                 }
                             }
-                        });
-                        if !repeat.load(Ordering::SeqCst) {
+                        }
+                    });
+
+                    let tt = { timeout_type.read().clone() };
+                    match tt {
+                        TimeoutType::Once | TimeoutType::Repeat => {
                             break;
                         }
-                    } else {
-                        let param = if !repeat.load(Ordering::SeqCst) {
-                            last_param.lock().take()
-                        } else {
-                            last_param.lock().clone()
-                        };
-                        if let Some(p) = param {
-                            task(p);
-                        }
-                        if !repeat.load(Ordering::SeqCst) {
-                            break;
+                        TimeoutType::OnceMore => {
+                            thread::park();
+                            continue;
                         }
                     }
                 }
@@ -463,7 +526,8 @@ impl<T: Debug + Clone + Send + 'static> TimeoutTask<T> {
         Self {
             last_param,
             last_tick,
-            repeat,
+            timeout_type,
+            thread_handler: Arc::new(Mutex::new(jh))
         }
     }
 
@@ -480,8 +544,9 @@ impl<T: Debug + Clone + Send + 'static> TimeoutTask<T> {
     /// ```
     ///
     /// ```
-    pub fn update_param(&mut self, new_param: T) {
+    pub fn feed_param(&mut self, new_param: T) {
         self.last_param.lock().replace(new_param);
+        self.thread_handler.lock().thread().unpark();
     }
 
     /// 重置计时器，将计时器起始点设置为当前时刻。
@@ -491,7 +556,50 @@ impl<T: Debug + Clone + Send + 'static> TimeoutTask<T> {
 
     /// 如果当前任务初始化为重复执行，则改变重复执行的行为成单次执行。即执行完本次超时任务后退出计时器。
     pub fn stop_repeat(&mut self) {
-        self.repeat.store(false, Ordering::SeqCst);
+        *self.timeout_type.write() = TimeoutType::Once;
+    }
+
+    /// 当超时任务类型为`TimeoutType::OnceMore`时，填充新的任务参数，再执行一次超时任务。
+    /// 调用该方法后，且在未超时前仍可使用`feed_param()`方法覆盖执行参数。
+    ///
+    /// # Arguments
+    ///
+    /// * `new_param`:
+    ///
+    /// returns: ()
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use std::time::{Duration, Instant};
+    /// use parking_lot::RwLock;
+    /// use debounce_fltk::{TimeoutTask, TimeoutType};
+    ///
+    /// let init_time = Arc::new(RwLock::new(Instant::now()));
+    /// let mut timeout_fn = TimeoutTask::new({
+    ///     let init_time_clone = init_time.clone();
+    ///     move |()| {
+    ///         println!("Timeout 执行时刻：{:?}", init_time_clone.read().elapsed());
+    ///     }
+    /// }, Duration::from_millis(300), false, TimeoutType::OnceMore);
+    /// timeout_fn.feed_param(());
+    ///
+    /// tokio::time::sleep(Duration::from_millis(1000)).await;
+    ///
+    /// timeout_fn.once_more_with_param(());
+    /// tokio::time::sleep(Duration::from_millis(3000)).await;
+    ///
+    /// timeout_fn.once_more_with_param(());
+    /// tokio::time::sleep(Duration::from_millis(500)).await;
+    /// ```
+    pub fn once_more_with_param(&mut self, new_param: T) {
+        let tt = { self.timeout_type.read().clone() };
+        if let TimeoutType::OnceMore = tt {
+            self.feed_param(new_param);
+            self.touch();
+            self.thread_handler.lock().thread().unpark();
+        }
     }
 }
 
@@ -501,7 +609,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
     use parking_lot::RwLock;
-    use crate::{TimeoutTask, TokioDebounce};
+    use crate::{TimeoutTask, TimeoutType, TokioDebounce};
 
     #[tokio::test]
     pub async fn debounce_test() {
@@ -583,8 +691,9 @@ mod tests {
                 total_exec_count_clone.fetch_add(1, Ordering::SeqCst);
                 println!("Timeout: {:?}，执行时刻：{:?}", p, start_clone.read().elapsed());
             }
-        }, Duration::from_millis(300), false, true);
-        timeout_fn.update_param(());
+        }, Duration::from_millis(300), false, TimeoutType::Repeat);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        timeout_fn.feed_param(());
 
         for _ in 1..=10 {
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -600,6 +709,26 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(2000)).await;
         assert_eq!(total_exec_count.load(Ordering::SeqCst), 6);
         println!("结束时刻：{:?}", start.read().elapsed());
+    }
+
+    #[tokio::test]
+    pub async fn timeout_once_more_test() {
+        let init_time = Arc::new(RwLock::new(Instant::now()));
+        let mut timeout_fn = TimeoutTask::new({
+            let init_time_clone = init_time.clone();
+            move |()| {
+                println!("Timeout 执行时刻：{:?}", init_time_clone.read().elapsed());
+            }
+        }, Duration::from_millis(300), false, TimeoutType::OnceMore);
+        timeout_fn.feed_param(());
+
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+
+        timeout_fn.once_more_with_param(());
+        tokio::time::sleep(Duration::from_millis(3000)).await;
+
+        timeout_fn.once_more_with_param(());
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
     #[tokio::test]
